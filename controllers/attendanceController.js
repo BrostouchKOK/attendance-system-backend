@@ -1,5 +1,16 @@
 import Attendance from "../models/Attendance.js";
 import Student from "../models/Student.js";
+import Class from "../models/Class.js";
+
+// Helper function សម្រាប់ទាញយកកាលបរិច្ឆេទថ្ងៃនេះតាម Timezone កម្ពុជា (Asia/Phnom_Penh - UTC+7)
+const getLocalTodayDate = () => {
+  const now = new Date();
+  const cambodiaOffset = 7 * 60; // UTC+7 ជា minute
+  const localTime = new Date(
+    now.getTime() + (cambodiaOffset + now.getTimezoneOffset()) * 60000,
+  );
+  return localTime.toISOString().split("T")[0];
+};
 
 // @desc    កត់ ឬកែប្រែវត្តមានសិស្សច្រើននាក់ក្នុងពេលតែមួយ (Bulk Save/Update)
 // @route   POST /api/attendances/bulk
@@ -7,20 +18,15 @@ import Student from "../models/Student.js";
 export const saveBulkAttendance = async (req, res) => {
   try {
     const { classId, date, records } = req.body;
-    // records ជា Array ទម្រង់៖ [{ studentId: "...", status: "Present" | "Absent" | "Permission" | "Late", note: "..." }]
 
     if (!classId || !date || !records || !Array.isArray(records)) {
-      return res
-        .status(400)
-        .json({
-          message:
-            "សូមផ្ដល់ទិន្នន័យ classId, date, និង records ឱ្យបានត្រឹមត្រូវ",
-        });
+      return res.status(400).json({
+        message: "សូមផ្ដល់ទិន្នន័យ classId, date, និង records ឱ្យបានត្រឹមត្រូវ",
+      });
     }
 
     const recordedBy = req.user._id;
 
-    // ប្រើ BulkOps (bulkWrite) ដើម្បីរក្សាទុក ឬកែប្រែទិន្នន័យក្នុងពេលតែមួយមានប្រសិទ្ធភាពខ្ពស់
     const operations = records.map((record) => ({
       updateOne: {
         filter: { studentId: record.studentId, date },
@@ -33,7 +39,7 @@ export const saveBulkAttendance = async (req, res) => {
             recordedBy,
           },
         },
-        upsert: true, // ប្រសិនបើមិនទាន់មាន វានឹងបង្កើតថ្មី
+        upsert: true,
       },
     }));
 
@@ -51,19 +57,15 @@ export const saveBulkAttendance = async (req, res) => {
 export const getAttendanceByClassAndDate = async (req, res) => {
   try {
     const { classId } = req.params;
-    const { date } = req.query; // ឧ. /api/attendances/class/123?date=2026-09-04
+    const { date } = req.query;
 
     if (!date) {
       return res.status(400).json({ message: "សូមបញ្ចូលកាលបរិច្ឆេទ (date)" });
     }
 
-    // ទាញបញ្ជីសិស្សទាំងអស់ក្នុងថ្នាក់នោះ
     const students = await Student.find({ classId }).sort({ nameKhmer: 1 });
-
-    // ទាញយកកំណត់ត្រាវត្តមានដែលមានស្រាប់ក្នុងថ្ងៃនោះ
     const attendances = await Attendance.find({ classId, date });
 
-    // រៀបចំ Mapping ស្ថានភាពវត្តមានជូនសិស្សម្នាក់ៗ
     const attendanceMap = {};
     attendances.forEach((att) => {
       attendanceMap[att.studentId.toString()] = {
@@ -73,7 +75,6 @@ export const getAttendanceByClassAndDate = async (req, res) => {
       };
     });
 
-    // បញ្ចូលទិន្នន័យសិស្ស និងវត្តមានដែលស្រង់រួច (បើមិនទាន់ស្រង់ ដាក់ default ថា Present)
     const result = students.map((student) => {
       const record = attendanceMap[student._id.toString()];
       return {
@@ -117,6 +118,80 @@ export const getAttendanceReport = async (req, res) => {
       .sort({ date: -1 });
 
     res.json(attendances);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    ទាញយកសង្ខេបភាគរយវត្តមាន និងអវត្តមានប្រចាំថ្ងៃ (បំបែករវាង Teacher & Admin)
+// @route   GET /api/attendances/today-summary
+// @access  Private
+export const getTodayAttendanceSummary = async (req, res) => {
+  try {
+    // 1. បង្កើត Date តាម Timezone កម្ពុជា (Asia/Phnom_Penh - UTC+7)
+    const now = new Date();
+    const cambodiaOffset = 7 * 60; // UTC+7 ជា minute
+    const localTime = new Date(
+      now.getTime() + (cambodiaOffset + now.getTimezoneOffset()) * 60000,
+    );
+    const today = localTime.toISOString().split("T")[0];
+
+    let studentFilter = {};
+    let attendanceFilter = { date: today };
+
+    if (req.user && req.user.role === "teacher") {
+      const myClasses = await Class.find({
+        $or: [
+          { homeroomTeacher: req.user._id },
+          { assignedTeachers: req.user._id },
+        ],
+      });
+      const myClassIds = myClasses.map((c) => c._id);
+
+      studentFilter = { classId: { $in: myClassIds } };
+      attendanceFilter.classId = { $in: myClassIds };
+    }
+
+    const totalStudents = await Student.countDocuments(studentFilter);
+    const todayAttendanceDocs = await Attendance.find(attendanceFilter);
+
+    // ករណីគ្មានសិស្ស ឬមិនទាន់ស្រង់វត្តមានសោះ
+    if (totalStudents === 0 || todayAttendanceDocs.length === 0) {
+      return res.json({
+        today,
+        totalStudents,
+        attendanceRate: "0%",
+        absenceRate: "0%",
+      });
+    }
+
+    let presentCount = 0;
+    let absentCount = 0;
+
+    todayAttendanceDocs.forEach((doc) => {
+      if (doc.status === "Present" || doc.status === "Late") {
+        presentCount++;
+      } else if (doc.status === "Absent" || doc.status === "Permission") {
+        absentCount++;
+      }
+    });
+
+    // ភាគបែងត្រូវយកចំនួនសិស្សដែលបានស្រង់វត្តមានរួច (Total Marked)
+    const totalMarked = todayAttendanceDocs.length;
+
+    // គណនាភាគរយ
+    const attendancePercentage = Math.round((presentCount / totalMarked) * 100);
+    const absencePercentage = Math.round((absentCount / totalMarked) * 100);
+
+    res.json({
+      today,
+      totalStudents,
+      totalMarked,
+      presentCount,
+      absentCount,
+      attendanceRate: `${attendancePercentage}%`,
+      absenceRate: `${absencePercentage}%`,
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

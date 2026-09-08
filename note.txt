@@ -1,2 +1,10 @@
 username: brostouchkokit1007_db_user
 pass:     YK6vvw5vVnKGC9e1
+
+
+==user==
+brostouch@gmail.com
+brostouch123
+
+admin
+admin123

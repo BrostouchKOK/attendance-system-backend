@@ -4,14 +4,44 @@ import Student from "../models/Student.js";
 // @route   GET /api/students
 export const getStudents = async (req, res) => {
   try {
-    const { classId } = req.query;
-    const filter = classId ? { classId } : {};
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const search = req.query.search || "";
+    const classId = req.query.classId || "";
 
-    const students = await Student.find(filter).populate(
-      "classId",
-      "className academicYear",
-    );
-    res.json(students);
+    // បង្កើត Filter Condition
+    let query = {};
+
+    // Filter តាម Class ID ប្រសិនបើមាន
+    if (classId) {
+      query.classId = classId;
+    }
+
+    // Filter តាម Search (ឈ្មោះខ្មែរ, ឈ្មោះឡាតាំង, ឬ អត្តលេខ)
+    if (search) {
+      query.$or = [
+        { nameKhmer: { $regex: search, $options: "i" } },
+        { nameLatin: { $regex: search, $options: "i" } },
+        { studentId: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    // រាប់ចំនួនសិស្សសរុបតាម Filter
+    const totalStudents = await Student.countDocuments(query);
+
+    // ទាញយកទិន្នន័យតាម Page
+    const students = await Student.find(query)
+      .populate("classId", "className academicYear")
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit);
+
+    res.json({
+      students,
+      page,
+      pages: Math.ceil(totalStudents / limit),
+      totalStudents,
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -56,7 +86,7 @@ export const createStudent = async (req, res) => {
 
     const photoUrl = req.file ? req.file.path : undefined;
 
-    const student = await Student.create({
+    let student = await Student.create({
       studentId,
       nameKhmer,
       nameLatin,
@@ -67,6 +97,9 @@ export const createStudent = async (req, res) => {
       address,
       ...(photoUrl && { photoUrl }),
     });
+
+    // Populate ថ្នាក់រៀនមុននឹងផ្ញើទៅ Frontend
+    student = await student.populate("classId", "className academicYear");
 
     res.status(201).json(student);
   } catch (error) {
@@ -91,7 +124,8 @@ export const updateStudent = async (req, res) => {
       req.params.id,
       req.body,
       { new: true },
-    );
+    ).populate("classId", "className academicYear");
+
     res.json(updatedStudent);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -108,6 +142,25 @@ export const deleteStudent = async (req, res) => {
     }
     await student.deleteOne();
     res.json({ message: "លុបទិន្នន័យសិស្សជោគជ័យ" });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+export const bulkTransferStudents = async (req, res) => {
+  try {
+    const { studentIds, targetClassId } = req.body; // studentIds ជា Array នៃ IDs
+
+    if (!studentIds || !Array.isArray(studentIds) || studentIds.length === 0 || !targetClassId) {
+      return res.status(400).json({ message: "សូមជ្រើសរើសសិស្ស និងថ្នាក់គោលដៅឱ្យបានត្រឹមត្រូវ" });
+    }
+
+    await Student.updateMany(
+      { _id: { $in: studentIds } },
+      { $set: { classId: targetClassId } }
+    );
+
+    res.json({ message: `បានផ្ទេរសិស្សចំនួន ${studentIds.length} នាក់ទៅថ្នាក់ថ្មីជោគជ័យ!` });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
