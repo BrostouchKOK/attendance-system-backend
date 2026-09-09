@@ -2,12 +2,12 @@ import Attendance from "../models/Attendance.js";
 import Student from "../models/Student.js";
 import Class from "../models/Class.js";
 
-// Helper function សម្រាប់ទាញយកកាលបរិច្ឆេទថ្ងៃនេះតាម Timezone កម្ពុជា (Asia/Phnom_Penh - UTC+7)
+// Helper function ទាញយកកាលបរិច្ឆេទតាម Timezone កម្ពុជា (UTC+7)
 const getLocalTodayDate = () => {
   const now = new Date();
   const cambodiaOffset = 7 * 60; // UTC+7 ជា minute
   const localTime = new Date(
-    now.getTime() + (cambodiaOffset + now.getTimezoneOffset()) * 60000,
+    now.getTime() + (cambodiaOffset + now.getTimezoneOffset()) * 60000
   );
   return localTime.toISOString().split("T")[0];
 };
@@ -123,74 +123,88 @@ export const getAttendanceReport = async (req, res) => {
   }
 };
 
-// @desc    ទាញយកសង្ខេបភាគរយវត្តមាន និងអវត្តមានប្រចាំថ្ងៃ (បំបែករវាង Teacher & Admin)
+// @desc    ទាញយកសង្ខេបភាគរយវត្តមានថ្ងៃនេះ និងប្រវត្តិប្រចាំសប្តាហ៍ (ចន្ទ - សុក្រ)
 // @route   GET /api/attendances/today-summary
 // @access  Private
 export const getTodayAttendanceSummary = async (req, res) => {
   try {
-    // 1. បង្កើត Date តាម Timezone កម្ពុជា (Asia/Phnom_Penh - UTC+7)
-    const now = new Date();
-    const cambodiaOffset = 7 * 60; // UTC+7 ជា minute
-    const localTime = new Date(
-      now.getTime() + (cambodiaOffset + now.getTimezoneOffset()) * 60000,
-    );
-    const today = localTime.toISOString().split("T")[0];
+    const today = getLocalTodayDate();
 
-    let studentFilter = {};
-    let attendanceFilter = { date: today };
-
-    if (req.user && req.user.role === "teacher") {
-      const myClasses = await Class.find({
-        $or: [
-          { homeroomTeacher: req.user._id },
-          { assignedTeachers: req.user._id },
-        ],
-      });
-      const myClassIds = myClasses.map((c) => c._id);
-
-      studentFilter = { classId: { $in: myClassIds } };
-      attendanceFilter.classId = { $in: myClassIds };
-    }
-
-    const totalStudents = await Student.countDocuments(studentFilter);
-    const todayAttendanceDocs = await Attendance.find(attendanceFilter);
-
-    // ករណីគ្មានសិស្ស ឬមិនទាន់ស្រង់វត្តមានសោះ
-    if (totalStudents === 0 || todayAttendanceDocs.length === 0) {
-      return res.json({
-        today,
-        totalStudents,
-        attendanceRate: "0%",
-        absenceRate: "0%",
-      });
-    }
+    // 1. ទាញយក summary ថ្ងៃនេះ
+    const todayAttendanceDocs = await Attendance.find({ date: today });
+    const totalMarked = todayAttendanceDocs.length;
 
     let presentCount = 0;
     let absentCount = 0;
+    let permissionCount = 0;
+    let lateCount = 0;
 
     todayAttendanceDocs.forEach((doc) => {
-      if (doc.status === "Present" || doc.status === "Late") {
-        presentCount++;
-      } else if (doc.status === "Absent" || doc.status === "Permission") {
-        absentCount++;
-      }
+      if (doc.status === "Present") presentCount++;
+      else if (doc.status === "Late") lateCount++;
+      else if (doc.status === "Absent") absentCount++;
+      else if (doc.status === "Permission") permissionCount++;
     });
 
-    // ភាគបែងត្រូវយកចំនួនសិស្សដែលបានស្រង់វត្តមានរួច (Total Marked)
-    const totalMarked = todayAttendanceDocs.length;
+    const attendanceRate =
+      totalMarked > 0
+        ? Math.round(((presentCount + lateCount) / totalMarked) * 100)
+        : 0;
+    const absenceRate =
+      totalMarked > 0
+        ? Math.round(((absentCount + permissionCount) / totalMarked) * 100)
+        : 0;
 
-    // គណនាភាគរយ
-    const attendancePercentage = Math.round((presentCount / totalMarked) * 100);
-    const absencePercentage = Math.round((absentCount / totalMarked) * 100);
+    // 2. គណនាទិន្នន័យពីថ្ងៃចន្ទ ដល់ សុក្រ នៃសប្តាហ៍បច្ចុប្បន្ន
+    const now = new Date();
+    const cambodiaOffset = 7 * 60;
+    const localTime = new Date(
+      now.getTime() + (cambodiaOffset + now.getTimezoneOffset()) * 60000
+    );
+
+    const dayOfWeek = localTime.getDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
+    const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+
+    const mondayDate = new Date(localTime);
+    mondayDate.setDate(localTime.getDate() + diffToMonday);
+
+    const daysKhmer = ["ចន្ទ", "អង្គារ", "ពុធ", "ព្រហស្បតិ៍", "សុក្រ"];
+    const weeklySummary = [];
+
+    for (let i = 0; i < 5; i++) {
+      const d = new Date(mondayDate);
+      d.setDate(mondayDate.getDate() + i);
+      const dateStr = d.toISOString().split("T")[0];
+
+      const dayDocs = await Attendance.find({ date: dateStr });
+      const dayTotal = dayDocs.length;
+
+      let dayPresent = 0;
+      let dayAbsent = 0;
+
+      dayDocs.forEach((doc) => {
+        if (doc.status === "Present" || doc.status === "Late") dayPresent++;
+        else dayAbsent++;
+      });
+
+      weeklySummary.push({
+        day: daysKhmer[i],
+        date: dateStr,
+        present: dayTotal > 0 ? Math.round((dayPresent / dayTotal) * 100) : 0,
+        absent: dayTotal > 0 ? Math.round((dayAbsent / dayTotal) * 100) : 0,
+      });
+    }
 
     res.json({
       today,
-      totalStudents,
       totalMarked,
       presentCount,
       absentCount,
-      attendanceRate: `${attendancePercentage}%`,
-      absenceRate: `${absencePercentage}%`,
+      permissionCount,
+      lateCount,
+      attendanceRate: `${attendanceRate}%`,
+      absenceRate: `${absenceRate}%`,
+      weeklySummary,
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
