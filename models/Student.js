@@ -5,8 +5,8 @@ const studentSchema = new mongoose.Schema(
     studentId: {
       type: String,
       required: [true, "សូមបញ្ចូលអត្តលេខសិស្ស"],
-      unique: true,
       trim: true,
+      unique: true,
     },
     nameKhmer: {
       type: String,
@@ -21,8 +21,16 @@ const studentSchema = new mongoose.Schema(
     },
     gender: {
       type: String,
-      enum: ["Male", "Female", "ប្រុស", "ស្រី"],
-      required: true,
+      enum: {
+        values: ["Male", "Female"],
+        message: "ភេទត្រូវតែជា Male ឬ Female",
+      },
+      required: [true, "សូមជ្រើសរើសភេទ"],
+      set: (val) => {
+        if (val === "ប្រុស") return "Male";
+        if (val === "ស្រី") return "Female";
+        return val;
+      },
     },
     dob: {
       type: Date,
@@ -40,15 +48,19 @@ const studentSchema = new mongoose.Schema(
     },
     parentPhone: {
       type: String,
+      trim: true,
       default: "",
     },
     address: {
       type: String,
+      trim: true,
       default: "",
     },
   },
-  { timestamps: true },
+  { timestamps: true }
 );
+
+studentSchema.index({ nameKhmer: "text", nameLatin: "text" });
 
 const Student = mongoose.model("Student", studentSchema);
 export default Student;
